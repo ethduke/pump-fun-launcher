@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}, OnceLock};
+use std::sync::{Arc, Mutex, Condvar, atomic::{AtomicBool, AtomicU64, Ordering}, OnceLock};
 use std::collections::VecDeque;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -74,6 +74,7 @@ pub struct GeneratedVanityAddress {
 
 pub struct VanityAddressPool {
     generated_addresses: Arc<Mutex<VecDeque<GeneratedVanityAddress>>>,
+    refill_cvar: Arc<Condvar>,
     is_generating: Arc<AtomicBool>,
     generation_thread: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
 }
@@ -83,6 +84,7 @@ impl VanityAddressPool {
         info!("Creating new VanityAddressPool");
         Self {
             generated_addresses: Arc::new(Mutex::new(VecDeque::new())),
+            refill_cvar: Arc::new(Condvar::new()),
             is_generating: Arc::new(AtomicBool::new(false)),
             generation_thread: Arc::new(Mutex::new(None)),
         }
@@ -108,6 +110,7 @@ impl VanityAddressPool {
         let generated_addresses = Arc::clone(&self.generated_addresses);
         let is_generating = Arc::clone(&self.is_generating);
         let generation_thread = Arc::clone(&self.generation_thread);
+        let refill_cvar = Arc::clone(&self.refill_cvar);
 
         is_generating.store(true, Ordering::SeqCst);
 
@@ -130,14 +133,25 @@ impl VanityAddressPool {
             let status_interval = Duration::from_secs(30); // Log status every 30 seconds
 
             while is_generating.load(Ordering::SeqCst) {
-                let current_count = {
-                    let pool = generated_addresses.lock().unwrap();
-                    pool.len()
-                };
+                // Determine whether we should generate a new address.
+                // If the pool is at or above target, wait until consumption or periodic timeout.
+                let mut current_count;
+                {
+                    let mut pool = generated_addresses.lock().unwrap();
+                    while pool.len() >= TARGET_VANITY_COUNT && is_generating.load(Ordering::SeqCst) {
+                        if last_status_time.elapsed() >= status_interval {
+                            info!("Vanity pool full ({}). Waiting for consumption...", TARGET_VANITY_COUNT);
+                            last_status_time = Instant::now();
+                        }
+                        let (p, _) = refill_cvar.wait_timeout(pool, Duration::from_secs(5)).unwrap();
+                        pool = p;
+                    }
 
-                if current_count >= TARGET_VANITY_COUNT {
-                    info!("Target vanity address count reached ({}), stopping generation", TARGET_VANITY_COUNT);
-                    break;
+                    if !is_generating.load(Ordering::SeqCst) {
+                        break;
+                    }
+
+                    current_count = pool.len();
                 }
 
                 // Log status every 30 seconds
@@ -203,6 +217,7 @@ impl VanityAddressPool {
         }
 
         self.is_generating.store(false, Ordering::SeqCst);
+        self.refill_cvar.notify_all();
         
         // Wait for thread to finish
         if let Some(handle) = self.generation_thread.lock().unwrap().take() {
@@ -217,6 +232,10 @@ impl VanityAddressPool {
         let mut pool = self.generated_addresses.lock().unwrap();
         let remaining_count = pool.len();
         let result = pool.pop_front();
+        if result.is_some() {
+            // Wake the generator so it can refill immediately
+            self.refill_cvar.notify_one();
+        }
         
         if let Some(ref addr) = result {
             info!("Using generated vanity address: {}", addr.address);
