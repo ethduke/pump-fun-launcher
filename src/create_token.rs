@@ -35,8 +35,8 @@ const METADATA_SEED: &[u8] = b"metadata";
 const EVENT_AUTHORITY_SEED: &[u8] = b"__event_authority";
 
 // Transaction constants
-const MIN_REQUIRED_LAMPORTS: u64 = 10_000_000; // 0.01 SOL
-const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
+pub const MIN_REQUIRED_LAMPORTS: u64 = 15_500_000; // 0.0155 SOL
+pub const LAMPORTS_PER_SOL: f64 = 1_000_000_000.0;
 
 pub struct TokenCreator {
     rpc: Arc<RpcClient>,

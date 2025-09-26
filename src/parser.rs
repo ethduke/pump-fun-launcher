@@ -3,7 +3,7 @@ use anyhow::Result;
 use std::time::Duration;
 use tokio::time::sleep;
 
-use crate::create_token::{TokenCreator, DEFAULT_NAME_TEMPLATE, DEFAULT_DESCRIPTION_TEMPLATE};
+use crate::create_token::{TokenCreator, DEFAULT_NAME_TEMPLATE, DEFAULT_DESCRIPTION_TEMPLATE, MIN_REQUIRED_LAMPORTS, LAMPORTS_PER_SOL};
 use crate::vanity_address::get_global_vanity_status;
 
 #[derive(Parser, Debug)]
@@ -76,6 +76,16 @@ pub async fn handle_token_creation(args: Args) -> Result<()> {
     let creator = TokenCreator::new();
     let wallet_balance = creator.get_wallet_balance().await?;
     let wallet_address = creator.get_wallet_address();
+    
+    // Early exit if wallet balance is below minimum required lamports
+    let required_sol = MIN_REQUIRED_LAMPORTS as f64 / LAMPORTS_PER_SOL;
+    if wallet_balance < required_sol {
+        return Err(anyhow::anyhow!(
+            "Insufficient wallet balance. Current: {:.4} SOL, Required: {:.4} SOL. Please add more SOL to your wallet.",
+            wallet_balance,
+            required_sol
+        ));
+    }
     
     // Check vanity status
     let (_has_vanity, _pool_size) = creator.get_vanity_status();
